@@ -1,0 +1,25 @@
+{
+  "schema": 1,
+  "architecture": "x86:LE:16:Real Mode",
+  "entry": 69632,
+  "code": [
+    {
+      "address": 69632,
+      "size": 3
+    }
+  ],
+  "stops": [
+    {
+      "address": 69635,
+      "kind": "boundary"
+    }
+  ],
+  "registers": {
+    "cs": 4096,
+    "ds": 16384,
+    "ss": 28672,
+    "es": 40960,
+    "sp": 32768
+  },
+  "flags": 514
+}

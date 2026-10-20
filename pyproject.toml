@@ -1,0 +1,53 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "binquery"
+dynamic = ["version"]
+description = "Bounded machine-code queries with explicit contracts and replayable witnesses"
+readme = "README.md"
+license = "ISC"
+license-files = ["LICENSE"]
+authors = [{name = "Curio Salon"}]
+requires-python = ">=3.12"
+dependencies = [
+    "angr==10.0.4.post1",
+    "archinfo==10.0.4",
+    "cle==10.0.4",
+    "capstone==5.0.9",
+    "pypcode==4.0.1",
+    "unicorn==2.1.4",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Software Development :: Testing",
+]
+
+[project.optional-dependencies]
+dev = ["build>=1.2,<2", "pytest>=8,<10", "twine>=6,<7", "ruff>=0.14,<1"]
+
+[project.urls]
+Repository = "https://github.com/curiosalon/binquery"
+Issues = "https://github.com/curiosalon/binquery/issues"
+
+[project.scripts]
+binquery = "binquery.cli:main"
+
+[tool.setuptools.dynamic]
+version = {attr = "binquery.__version__"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 88
+target-version = "py312"

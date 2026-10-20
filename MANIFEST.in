@@ -1,0 +1,8 @@
+include LICENSE README.md
+recursive-include docs *.md
+recursive-include examples *.json *.bin *.c *.cpp
+recursive-include tests *.py
+recursive-include tools *.py
+prune proof
+prune .github
+global-exclude __pycache__ *.py[cod]
