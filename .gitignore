@@ -2,7 +2,8 @@
 __pycache__/
 *.egg-info/
 .pytest_cache/
-proof/vmext/*.bin
-proof/results/
+.ruff_cache/
 dist/
 build/
+/demo*/
+/*.o

@@ -24,8 +24,8 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-python@v7.0.0
         with:
           python-version: ${{ matrix.python }}
           cache: pip
@@ -39,14 +39,16 @@ jobs:
       - name: Install built wheel with public dependencies
         run: python -c "import glob,subprocess,sys; subprocess.check_call([sys.executable,'-m','pip','install',glob.glob('dist/*.whl')[0]+'[dev]'])"
       - name: Check source formatting
-        run: python -m ruff format --check src tests tools
+        run: python -m ruff format --check src tests tools examples
       - name: Check dependency consistency
         run: python tools/check_dependencies.py
       - name: Test installed package
         run: python -m pytest -q -ra
       - name: Exercise installed CLI outside checkout
         run: python tools/smoke.py
-      - uses: actions/upload-artifact@v4
+      - name: Run documentation examples
+        run: python tools/check_examples.py
+      - uses: actions/upload-artifact@v7.0.2
         with:
           name: binquery-${{ matrix.os }}-py${{ matrix.python }}
           path: dist/*

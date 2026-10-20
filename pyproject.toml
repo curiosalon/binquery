@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "binquery"
 dynamic = ["version"]
-description = "Bounded machine-code queries with explicit contracts and replayable witnesses"
+description = "Compare machine-code behavior and find inputs that expose differences"
 readme = "README.md"
 license = "ISC"
 license-files = ["LICENSE"]
@@ -33,6 +33,7 @@ classifiers = [
 dev = ["build>=1.2,<2", "pytest>=8,<10", "twine>=6,<7", "ruff>=0.14,<1"]
 
 [project.urls]
+Documentation = "https://github.com/curiosalon/binquery#readme"
 Repository = "https://github.com/curiosalon/binquery"
 Issues = "https://github.com/curiosalon/binquery/issues"
 

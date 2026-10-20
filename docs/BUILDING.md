@@ -1,12 +1,11 @@
-# Building and testing
+# Build, test, and contribute
 
-binquery is a Python package built with setuptools through the standard
-PEP 517 interface. Install CPython 3.12 or later. Dependencies are available
-through public PyPI packages. Native dependency wheels must be available
-for that Python and host combination, or their build requirements must be
-installed separately.
+binquery uses Python's standard packaging tools: pip for installation and
+setuptools for source archives and wheels. Use Python 3.12 or later.
 
-## Linux and macOS
+## Development setup
+
+On Linux or macOS:
 
 ```sh
 git clone https://github.com/curiosalon/binquery.git
@@ -14,79 +13,92 @@ cd binquery
 python3 -m venv .venv
 . .venv/bin/activate
 python -m pip install --upgrade pip
-python -m pip install ".[dev]"
-python -m build
-python -m twine check dist/*
+python -m pip install -e ".[dev]"
 python -m pytest -q -ra
-python tools/smoke.py
+python tools/check_examples.py
 ```
 
-## Windows PowerShell
-
-Activation is optional; these commands do not require changing execution policy.
+On Windows PowerShell, activation is optional:
 
 ```powershell
 git clone https://github.com/curiosalon/binquery.git
 cd binquery
 py -3.12 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install --upgrade pip
-.\.venv\Scripts\python.exe -m pip install ".[dev]"
-.\.venv\Scripts\python.exe -m build
-.\.venv\Scripts\python.exe -m twine check dist/*
+.\.venv\Scripts\python.exe -m pip install -e ".[dev]"
 .\.venv\Scripts\python.exe -m pytest -q -ra
-.\.venv\Scripts\python.exe tools/smoke.py
-.\.venv\Scripts\binquery.exe --help
+.\.venv\Scripts\python.exe tools/check_examples.py
 ```
 
-`python -m build` produces a source archive and a wheel under `dist/`,
-building the wheel from the source archive. Install the wheel with
-`python -m pip install /path/to/binquery-0.5.0-py3-none-any.whl`.
-The wheel contains Python code; pip installs the platform-specific native
-dependencies separately. A portable wheel is not a claim of support for
-every host architecture.
+An editable install makes source changes available immediately. The `dev` extra
+adds pytest, build, twine, and Ruff. Clang is optional; it enables the compiled
+C/C++ examples and their tests.
 
-## Dependencies and reproducibility
+## Build a package
 
-`pyproject.toml` is the maintained dependency declaration. Runtime packages
-come from PyPI: angr, archinfo, CLE, Capstone, pypcode and Unicorn. The
-semantic backends are pinned because the adapter depends on their tested
-behavior. The optional `dev` extra adds pytest, build, twine and Ruff.
-Normal installation resolves platform markers and transitive dependencies
-through pip, without a host-specific environment freeze.
+Using the Python executable from your environment:
 
-If wheels are unavailable, follow the upstream instructions rather than
-assuming binquery's pure Python build also compiles its dependencies:
-[angr installation](https://docs.angr.io/en/latest/getting-started/installing.html),
-[pypcode](https://pypi.org/project/pypcode/4.0.1/),
-[Unicorn](https://pypi.org/project/unicorn/2.1.4/).
-Their source builds may need native compiler toolchains. OpenBSD, Windows
-ARM64 and other untested hosts are not presently qualified.
+```sh
+python -m build
+python -m twine check dist/*
+```
 
-## Validation
+This creates a source archive and a wheel in `dist/`. The build produces the
+wheel from the source archive, checking that the archive contains the required
+files. The source archive also includes the tutorials, examples, and tests.
 
-GitHub Actions builds and installs the wheel, runs tests and executes
-synthetic CLI examples on Linux, macOS and Windows with Python 3.12, plus
-Linux with Python 3.13 and 3.14. Consult the actual workflow results for
-platform qualification; a configured job alone is not a passing test.
-The CLI deadline uses a separate Python analysis process with a portable
-timeout. It kills and reaps that process on expiry and returns INCONCLUSIVE.
-Neither process launches the input executable.
+Install a wheel in another environment with:
 
-Tests construct synthetic machine code. The separate C/C++ ELF test uses
-clang when available and reports a skip otherwise. All distributed test inputs
-are synthetic; original game binaries and proprietary toolchains are not
-required or included.
+```sh
+python -m pip install /path/to/binquery-0.5.0-py3-none-any.whl
+```
 
-Run `python -m ruff format --check src tests tools` to verify the formatting.
-The build produces local artifacts and does not upload them to PyPI.
+Replace the path with your built wheel. pip installs the native dependencies
+for the destination platform. Current installation is from Git or a built
+wheel; there is no binquery release on PyPI.
 
-## Known upstream macOS packaging warning
+## Checks before a pull request
 
-The pinned public Z3 5.1.0.0 wheel has a `macosx_13_0` filename but an internal
-`macosx_13_3` WHEEL tag. On tested macOS this installs and runs, while `pip check`
-reports it as unsupported. `python tools/check_dependencies.py` retains pip's
-checks and reports a narrow exception only for that exact warning, version and
-internal tag matching the running architecture on macOS 13.3 or later. Every other missing, conflicting or
-unsupported dependency fails. No installed metadata is patched. The full tests
-and installed CLI smoke checks remain required; this exception is not runtime
-qualification. Other operating systems use pip's result unchanged.
+```sh
+python -m ruff format --check src tests tools examples
+python tools/check_dependencies.py
+python -m pytest -q -ra
+python tools/smoke.py
+python tools/check_examples.py
+```
+
+Run `python -m ruff format src tests tools examples` to apply formatting.
+`tools/smoke.py` exercises the installed CLI outside the checkout.
+`tools/check_examples.py` runs the tutorial comparisons and checks the expected
+results, including the intentional differences. It reports a skip for the
+compiled examples if Clang is unavailable.
+
+For a bug report, include `binquery --version`, the command, its JSON result,
+and a small binary and contract that reproduce the problem. For instruction
+support changes, add both a successful case and a case that should fail; check
+concrete counterexamples with Unicorn.
+
+## Platforms and dependencies
+
+The [CI workflow](https://github.com/curiosalon/binquery/actions/workflows/ci.yml)
+builds and installs the package on Linux, macOS, and Windows with Python 3.12,
+and on Linux with Python 3.13 and 3.14. Each job runs the test suite and CLI
+examples. The workflow page has the results and downloadable packages.
+
+Runtime dependencies are declared in `pyproject.toml`: angr, archinfo, CLE,
+Capstone, pypcode, and Unicorn. Their versions are pinned because changes to
+instruction semantics can affect analysis results. pip resolves their
+platform-specific dependencies normally.
+
+On a system without compatible native wheels, use the upstream build
+instructions for [angr](https://docs.angr.io/en/latest/getting-started/installing.html),
+[pypcode](https://pypi.org/project/pypcode/4.0.1/), and
+[Unicorn](https://pypi.org/project/unicorn/2.1.4/). Those builds may require
+a C/C++ compiler and additional libraries.
+
+### Z3 warning on macOS
+
+The pinned Z3 5.1.0.0 wheel has inconsistent macOS version tags. On macOS 13.3
+or later, `pip check` can report it as unsupported even though it runs.
+`tools/check_dependencies.py` recognizes that exact warning for the matching
+CPU architecture and still rejects other dependency errors.
