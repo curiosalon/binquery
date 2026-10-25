@@ -58,6 +58,15 @@ class RealModeEngine(angr.engines.UberEnginePcode):
         return super()._get_value(varnode)
 
     def _set_value(self, varnode, value):
+        # The SLEIGH real-mode language synthesizes CS from the instruction's
+        # high address bits before near control transfers. That loses valid
+        # non-64KiB-aligned segments. The explicit machine contract owns CS;
+        # qualify() rejects actual CS writes and every far transfer.
+        if (
+            varnode.space.name == "register"
+            and varnode.offset == self.state.arch.registers["cs"][0]
+        ):
+            return
         # SLEIGH unique space is byte addressable; an operation may read a
         # subrange of an earlier wider temporary. Upstream assumes equal sizes.
         if varnode.space.name == "unique":

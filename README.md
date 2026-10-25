@@ -75,6 +75,9 @@ to preserve, then let the solver look for a case that breaks it.
 
 ## Learn by doing
 
+- [Follow a value through a program](docs/EXECUTION.md): save execution,
+  resume unfinished paths, and trace a read back to its supplying write.
+
 - [Packed bits, memory reads, and counterexamples](docs/CAPABILITIES.md):
   extract three bits from a word, catch a wrong mask, and examine a wider read.
 - [Compare compiled C and C++ functions](docs/COMPILED.md):
@@ -105,6 +108,11 @@ binquery compare examples/inc.bin examples/add.bin --contract examples/inc.json 
 Like `diff`, a comparison exits with code **0** for agreement and **1** for a
 difference. Code **2** means the analysis could not finish or encountered an
 unsupported operation; **3** means invalid input and **4** means a tool error.
+
+## Problems and feedback
+
+Report bugs or awkward workflows through [GitHub Issues](https://github.com/curiosalon/binquery/issues/new/choose).
+The [reporting guide](docs/REPORTING.md) explains what makes a useful reproduction.
 
 ## License
 

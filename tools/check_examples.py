@@ -172,6 +172,77 @@ def main():
             "Passed: add-one, packed bits, wrong mask, replays, RAM, layout, tutorial snippets."
         )
 
+        run([sys.executable, "examples/saved_analysis.py", "trace-demo"], work)
+        checkpoint = "trace-demo/run.bq"
+        initial = cli(
+            work,
+            "analyze",
+            "trace-demo/routine.bin",
+            "--contract",
+            "trace-demo/analysis.json",
+            "--save",
+            checkpoint,
+            "--steps",
+            "2",
+            expected=2,
+        )
+        assert initial["metrics"]["pending_paths"]
+        resumed = cli(work, "analyze", "--resume", checkpoint, "--steps", "128")
+        assert resumed["complete"] and len(resumed["paths"]) == 2
+        assert all(path["replay"]["matched"] for path in resumed["paths"])
+        assert cli(work, "report", checkpoint, "--check-inputs")["complete"]
+        before = (work / checkpoint).read_bytes()
+        cli(work, "analyze", "--resume", checkpoint, "--steps", "128")
+        assert (work / checkpoint).read_bytes() == before
+        write = cli(
+            work,
+            "query",
+            "--analysis",
+            checkpoint,
+            "--kind",
+            "access",
+            "--access",
+            "write",
+            "--range",
+            "0x40200:2",
+            "--expect",
+            "always",
+        )
+        assert write["status"] == "ESTABLISHED"
+        suppliers = cli(
+            work,
+            "query",
+            "--analysis",
+            checkpoint,
+            "--kind",
+            "last-write",
+            "--site",
+            "0x1100f",
+        )
+        assert suppliers["status"] == "ESTABLISHED"
+        for match in suppliers["matches"]:
+            for byte in match["bytes"]:
+                assert all(row["instruction"] == 0x1100C for row in byte["writers"])
+        dot = run(
+            [
+                sys.executable,
+                "-m",
+                "binquery",
+                "graph",
+                checkpoint,
+                "--view",
+                "memory",
+                "--format",
+                "dot",
+            ],
+            work,
+        )
+        assert "digraph" in dot.stdout
+        snippets("EXECUTION.md", work)
+        print(
+            "Passed: saved analysis, resume, memory suppliers, graph, scripting example."
+        )
+
         compiler = shutil.which("clang")
         if compiler is None:
             print("Skipped compiled C/C++ examples: clang is not on PATH.")

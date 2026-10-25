@@ -220,3 +220,63 @@ def test_saved_replay_cannot_bypass_portable_shift_policy(tmp_path):
     witness = analysis.witness(state, [analysis.input_regs["cx"] == 32])
     native = replay(Analysis(a, spec), witness)
     assert not native["matched"] and "portable model" in " ".join(native["errors"])
+
+
+@pytest.mark.parametrize("size", [1, 2])
+@pytest.mark.parametrize("memory", [False, True])
+@pytest.mark.parametrize("value", [0, 1, 127, 128, 255, 32768, 65535])
+def test_negation_values_and_replay(tmp_path, size, memory, value):
+    mask = (1 << (size * 8)) - 1
+    value &= mask
+    code = ("f6" if size == 1 else "f7") + ("1e0001" if memory else "d8")
+    a, _, spec = fixture(
+        tmp_path,
+        code,
+        memory=[{"address": 0x40100, "hex": value.to_bytes(size, "little").hex()}]
+        if memory
+        else [],
+    )
+    spec["registers"]["ax"] = value
+    analysis = Analysis(a, spec).explore()
+    if memory:
+        assert analysis.issues and "NEG memory effects" in analysis.issues[0]["reason"]
+        return
+    assert not analysis.issues
+    r = replay_defined_flags(analysis, analysis.leaves[0])
+    actual = r["registers"]["ax"] & mask
+    assert actual == (-value) & mask
+    assert r["flags"]["cf"] == (value != 0)
+    assert r["flags"]["of"] == (value == 1 << (size * 8 - 1))
+
+
+@pytest.mark.parametrize(
+    "prefix,segment", [("26", "es"), ("2e", "cs"), ("36", "ss"), ("3e", "ds")]
+)
+@pytest.mark.parametrize("size", [1, 2])
+@pytest.mark.parametrize("store", [False, True])
+def test_explicit_memory_segment_uses_selected_segment(
+    tmp_path, prefix, segment, size, store
+):
+    op = ("a2" if size == 1 else "a3") if store else ("a0" if size == 1 else "a1")
+    a, _, spec = fixture(tmp_path, prefix + op + "0002")
+    address = spec["registers"][segment] * 16 + 0x200
+    spec["memory"] = [{"address": address, "hex": "3412"[: size * 2]}]
+    spec["registers"]["ax"] = 0x5678
+    analysis = Analysis(a, spec).explore()
+    assert not analysis.issues
+    r = replay_defined_flags(analysis, analysis.leaves[0])
+    assert len(r["events"]) == 1
+    assert r["events"][0]["address"] == address
+    assert r["events"][0]["kind"] == ("write" if store else "read")
+    assert r["events"][0]["value"] == (
+        (0x5678 if store else 0x1234) & ((1 << (8 * size)) - 1)
+    )
+
+
+@pytest.mark.parametrize(
+    "code", ["2e90", "2e668b060002", "2ef3a5", "648b060002", "2ef0ff060002"]
+)
+def test_other_legacy_prefix_forms_still_reject(tmp_path, code):
+    a, _, spec = fixture(tmp_path, code, claims=[preserved()])
+    result = query(a, spec)
+    assert not result["complete"] and result["issues"]

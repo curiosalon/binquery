@@ -11,7 +11,11 @@ or the [packed-bit tutorial](CAPABILITIES.md).
 | `query` | Check a property of one binary. |
 | `compare` | Compare selected outputs of two binaries. |
 | `replay` | Run a saved counterexample through Unicorn. |
-| `schema` | Print the machine or comparison JSON Schema. |
+| `targets` | Enumerate destinations of a selected control transfer. |
+| `analyze` | Save execution paths and unfinished machine states. |
+| `report` | Read a saved execution report. |
+| `graph` | Export flow, call, or memory graphs as DOT or JSON. |
+| `schema` | Print the machine, comparison, or analysis JSON Schema. |
 | `example` | Print a sample contract or a bundle of example files. |
 
 Use `binquery COMMAND --help` for options. Human-readable output is the default;
@@ -57,7 +61,7 @@ comparison begin with the same values.
 | `format` | `blob` for raw bytes, the default; `auto` for CLE loading. |
 | `architecture` | `AMD64` or `x86:LE:16:Real Mode`. Required for raw bytes. |
 | `entry` | Starting address: physical for real mode, loaded virtual address for AMD64. |
-| `code` | Code ranges with `address` and `size`. Raw ranges may also specify `offset`, auxiliary `file`, and whole-file `sha256`. |
+| `code` | Code ranges with `address` and `size`. Raw ranges may also specify `offset`, auxiliary `file`, and whole-file `sha256`, and a real mode `segment`. |
 | `stops` | Addresses outside the code with kind `return`, `failure`, or `boundary`. |
 | `registers` | Concrete values or symbolic unsigned ranges. |
 | `flags` | Initial flags; `0x202` is used in the examples. |
@@ -68,7 +72,8 @@ comparison begin with the same values.
 | `shift_count` | `portable`, the default, or `masked5` for 286-and-later count masking. |
 
 For real mode, supply concrete CS, DS, SS, ES, and SP. Physical addresses use
-`segment * 16 + offset`. Code and stop addresses must fit the same CS window.
+`segment * 16 + offset`. Code ranges and stops must fit a declared CS window. Use a code range’s
+`segment` for helpers reached through a far transfer.
 For AMD64, supply the stack and arguments according to the function's calling
 convention; the [compiled-function example](COMPILED.md) shows one setup.
 
@@ -123,6 +128,23 @@ binquery example --arch AMD64 --contract-only > machine.json
 binquery schema --schema-only > machine.schema.json
 binquery schema --kind comparison --schema-only > comparison.schema.json
 ```
+
+## Indirect targets and saved execution
+
+`binquery targets routine.bin --contract machine.json --site ADDRESS --json`
+executes the prefix leading to a transfer and enumerates its destinations.
+The result includes `assumptions`, `domain_exhausted`, `complete`, witnesses,
+and native replays. A table write encountered before the transfer affects the
+observed destination. The result does not establish that nothing else can
+modify the table in the surrounding program.
+
+By default, a valid `targets` observation exits 0 even if incomplete. Add
+`--require-complete` to make incomplete observations exit 1. Invalid or failed
+target requests exit 2. Check the JSON status for the detailed outcome.
+
+For saved paths, memory suppliers, runtime code changes, and fill/copy queries,
+use the [execution tutorial](EXECUTION.md). Its `analyze` command uses schema 2;
+the machine contracts in this reference remain schema 1.
 
 ## Selecting comparison outputs
 
@@ -216,8 +238,10 @@ The execution engines are angr's VEX backend for AMD64 and p-code backend for
   depends on an undefined flag reports `UNSUPPORTED`. AF is not observable.
   Default shift counts are 0 through 31; `masked5` selects five-bit masking.
 
-Floating point, vector code, far calls/returns, interrupts, devices, and
-self-modifying code are unsupported. External calls need supplied code;
+Real mode far calls, jumps, and returns are supported with supplied code and
+frames. Saved analysis also handles declared interrupts and port responses,
+and decodes runtime changes to code. See [saved execution](EXECUTION.md).
+Floating point and vector code remain unsupported. External calls need supplied code;
 operating systems, C++ exception handling, and language runtimes are not
 automatically modeled. Inspection can recognize more formats and architectures
 than execution supports.
@@ -241,6 +265,12 @@ If a result is incomplete, read `issues` in the JSON output. Add missing
 memory or helper code, narrow a pointer's input range, or increase the relevant
 limit. An unexplored path prevents an equivalence result.
 
-Some AMD64 code that accesses RAM on its own code page encounters a Unicorn
-memory-hook limitation during replay. Such a result remains inconclusive;
-use separate code and data pages in synthetic examples.
+The legacy comparison/target replay path has a Unicorn memory-hook limitation
+for some accesses on executable pages and for RETF destination fetches. Those
+replay failures remain inconclusive. Saved execution uses its own replay path
+with same-page and far-return regression coverage.
+
+For schema 2, the instruction depth cap is 1,048,576, with additional limits
+on instruction variants, events, replays, and checkpoint size. Run
+`binquery analyze --help` and `binquery schema --kind analysis --schema-only`
+for the current fields.

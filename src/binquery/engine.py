@@ -43,8 +43,13 @@ def _bounded(state, expr, declaration):
     state.add_constraints(claripy.UGE(expr, lo), claripy.ULE(expr, hi))
 
 
+class _TargetReached(Exception):
+    pass
+
+
 class Analysis:
-    def __init__(self, binary, spec, namespace=""):
+    def __init__(self, binary, spec, namespace="", *, dynamic_code=False):
+        self.dynamic_code = dynamic_code
         self.started = time.monotonic()
         self.spec = spec
         self.namespace = namespace
@@ -64,11 +69,16 @@ class Analysis:
         self.instructions = {}
         self.chunks = []
         self.leaves = []
+        self.target_site = None
+        self.target_states = []
         self.issues = []
         self.steps = 0
         self._project()
         self._state()
         self._validate_claims()
+
+    def engine_class(self):
+        return RealModeEngine
 
     def _project(self):
         spec = self.spec
@@ -93,7 +103,7 @@ class Analysis:
             arch = architecture() if self.real else archinfo.ArchAMD64()
             first = spec["code"][0]
             raw = self._range_bytes(first)
-            kwargs = {"engine": RealModeEngine} if self.real else {}
+            kwargs = {"engine": self.engine_class()} if self.real else {}
             self.project = angr.Project(
                 io.BytesIO(raw),
                 arch=arch,
@@ -104,6 +114,7 @@ class Analysis:
                 },
                 auto_load_libs=False,
                 use_sim_procedures=False,
+                selfmodifying_code=self.dynamic_code,
                 **kwargs,
             )
         decoder = capstone.Cs(
@@ -122,27 +133,37 @@ class Analysis:
             else:
                 raw = self._range_bytes(row)
             self.chunks.append((row["address"], raw))
-            decoded = list(decoder.disasm(raw, row["address"]))
-            if sum(i.size for i in decoded) != len(raw):
+            decoded = (
+                [] if self.dynamic_code else list(decoder.disasm(raw, row["address"]))
+            )
+            if not self.dynamic_code and sum(i.size for i in decoded) != len(raw):
                 raise Invalid(
                     "Code range includes undecodable bytes; declare only code"
                 )
             for ins in decoded:
                 self.instructions[ins.address] = ins
-        if spec["entry"] not in self.instructions:
+        if not self.dynamic_code and spec["entry"] not in self.instructions:
             raise Invalid("Entry is not a decoded instruction boundary")
         self.stop_map = {row["address"]: row["kind"] for row in spec["stops"]}
         if self.real:
             cs = spec["registers"].get("cs")
             if not isinstance(cs, int):
                 raise Invalid("Real mode needs concrete CS")
+            domains = []
+            for row in spec["code"]:
+                segment = row.get("segment", cs)
+                if (
+                    not segment << 4
+                    <= row["address"]
+                    < row["address"] + row["size"]
+                    <= (segment << 4) + 65536
+                ):
+                    raise Unsupported("Code wraps the declared CS segment")
+                domains.append((segment << 4, (segment << 4) + 65536))
             if any(
-                not (cs << 4) <= at < (cs << 4) + 65536
-                for at in [*self.instructions, *self.stop_map]
+                not any(lo <= at < hi for lo, hi in domains) for at in self.stop_map
             ):
-                raise Unsupported("Near-only code and exits must share the declared CS")
-            if any(a + len(raw) > (cs << 4) + 65536 for a, raw in self.chunks):
-                raise Unsupported("Code wraps the declared CS segment")
+                raise Unsupported("Exits must share a declared code segment")
         elif any(
             not 0 <= a < (1 << 47) or a + size > (1 << 47)
             for a, size in [(a, len(raw)) for a, raw in self.chunks]
@@ -177,17 +198,7 @@ class Analysis:
             add_options={angr.options.SPECIAL_MEMORY_FILL},
             special_memory_filler=_uninitialized,
         )
-        state.solver._solver.timeout = spec["limits"]["solver_ms"]
-        state.memory.read_strategies = [
-            angr.concretization_strategies.SimConcretizationStrategySolutions(
-                spec["limits"]["addresses"]
-            )
-        ]
-        state.memory.write_strategies = [
-            angr.concretization_strategies.SimConcretizationStrategySolutions(
-                spec["limits"]["addresses"]
-            )
-        ]
+        self.apply_limits(state)
         self.register_names = REG16 if self.real else REG64
         unexpected = set(spec["registers"]) - set(self.register_names)
         if unexpected:
@@ -251,10 +262,35 @@ class Analysis:
         for address, expr in self.input_memory:
             initialized.update(range(address, address + expr.size() // 8))
         state.globals["initialized"] = frozenset(initialized)
+        state.inspect.b(
+            "mem_read", when=angr.BP_BEFORE, action=self._check_read_address
+        )
         state.inspect.b("mem_read", when=angr.BP_AFTER, action=self._read)
         state.inspect.b("mem_write", when=angr.BP_BEFORE, action=self._write)
         state.inspect.b("exit", when=angr.BP_BEFORE, action=self._exit)
         self.initial = state
+
+    def apply_limits(self, state):
+        """Apply execution policies to new or restored machine states."""
+        state.solver._solver.timeout = self.spec["limits"]["solver_ms"]
+        state.memory.read_strategies = [
+            angr.concretization_strategies.SimConcretizationStrategySolutions(
+                self.spec["limits"]["addresses"]
+            )
+        ]
+        state.memory.write_strategies = [
+            angr.concretization_strategies.SimConcretizationStrategySolutions(
+                self.spec["limits"]["addresses"]
+            )
+        ]
+
+    def _check_read_address(self, state):
+        # Stop before angr's memory concretizer rejects an oversized domain.
+        # The caller can then retain the state at the instruction boundary.
+        limit = self.spec["limits"]["addresses"]
+        address = state.inspect.attrs.mem_read_address
+        if len(state.solver.eval_upto(address, limit + 1)) > limit:
+            raise Incomplete("Memory address enumeration limit")
 
     def _record(self, state, kind):
         address = getattr(state.inspect.attrs, "mem_" + kind + "_address")
@@ -299,10 +335,14 @@ class Analysis:
                 )
             if len(possible) == 1:
                 state.globals["initialized"] = initialized | touched
-        if kind == "write" and any(
-            a < start + len(raw) and start < a + size
-            for a in possible
-            for start, raw in self.chunks
+        if (
+            kind == "write"
+            and not self.dynamic_code
+            and any(
+                a < start + len(raw) and start < a + size
+                for a in possible
+                for start, raw in self.chunks
+            )
         ):
             raise Unsupported("Writes to selected code are unsupported")
         path = state.globals["path"]
@@ -316,6 +356,15 @@ class Analysis:
         self._record(state, "write")
 
     def _exit(self, state):
+        if (
+            self.target_site is not None
+            and state.globals["path"][-1] == self.target_site
+        ):
+            captured = state.copy()
+            captured.add_constraints(state.inspect.attrs.exit_guard)
+            if captured.solver.satisfiable():
+                self.target_states.append((captured, state.inspect.attrs.exit_target))
+            raise _TargetReached()
         if len(state.solver.eval_upto(state.inspect.attrs.exit_target, 2)) > 1:
             raise Incomplete(
                 "Symbolic indirect control target is not uniquely resolved"
@@ -348,6 +397,100 @@ class Analysis:
                         "no_read claim does not name a memory-reading instruction"
                     )
 
+    def qualify(self, ins):
+        qualify(ins, self.real)
+
+    def validate_relation_state(self, successor):
+        if self.fixed_segments and any(
+            successor.solver.satisfiable(
+                extra_constraints=[getattr(successor.regs, n) != value]
+            )
+            for n, value in self.fixed_segments.items()
+        ):
+            raise Unsupported("Layout relation requires unchanged segment registers")
+        if self.fixed_stack:
+            low, size = self.fixed_stack
+            sp = (claripy.ZeroExt(16, successor.regs.ss) << 4) + claripy.ZeroExt(
+                16, successor.regs.sp
+            )
+            if successor.solver.satisfiable(
+                extra_constraints=[
+                    claripy.Or(
+                        claripy.ULT(sp, low),
+                        claripy.UGT(sp, low + size),
+                    )
+                ]
+            ):
+                raise Unsupported("SP leaves the fixed relation stack window")
+
+    def step(self, state, ins):
+        """Execute one qualified instruction; callers own scheduling and retention."""
+        address = ins.address
+        path = state.globals["path"]
+        if self.project.is_hooked(address):
+            raise Unsupported("Implicit or explicit hooked execution is not admitted")
+        self.qualify(ins)
+        if self.real and ins.mnemonic in ("ljmp", "lcall", "retf"):
+            from .transfers import execute
+
+            state.globals["path"] = path + (address,)
+            target = execute(state, ins)
+            self.steps += 1
+            self.validate_relation_state(state)
+            if address == self.target_site:
+                self.target_states.append((state.copy(), target))
+                return []
+            elif len(state.solver.eval_upto(target, 2)) != 1:
+                raise Incomplete("Symbolic far target needs a target query")
+            else:
+                state.regs.ip = target
+            return [state]
+        if (
+            self.real
+            and ins.mnemonic == "call"
+            and concrete(state, state.regs.cs) & 0xFFF
+        ):
+            raise Unsupported(
+                "Near CALL return offsets with a non-64KiB-aligned CS are not qualified"
+            )
+        flag_context = (
+            before_instruction(state, ins, self.spec.get("shift_count", "portable"))
+            if self.real
+            else None
+        )
+        state.globals["path"] = path + (address,)
+        previous_events = len(state.globals["events"])
+        successors = self.project.factory.successors(
+            state,
+            num_inst=1,
+            **({"insn_bytes": bytes(ins.bytes)} if self.dynamic_code else {}),
+        )
+        self.steps += 1
+        if successors.unconstrained_successors:
+            raise Incomplete("Unconstrained control flow")
+        if self.real:
+            for successor in successors.flat_successors:
+                events = successor.globals["events"]
+                current_events = events[previous_events:]
+                after_instruction(successor, ins, flag_context, current_events)
+                for segment in ("ds", "es"):
+                    if (
+                        len(
+                            successor.solver.eval_upto(
+                                getattr(successor.regs, segment), 2
+                            )
+                        )
+                        != 1
+                    ):
+                        raise Unsupported("Symbolic DS/ES updates are not qualified")
+                self.validate_relation_state(successor)
+                if is_memory_arithmetic(ins):
+                    normalized = normalize_arithmetic(successor, ins, current_events)
+                    successor.globals["events"] = events[:previous_events] + normalized
+        if not successors.flat_successors and not successors.unsat_successors:
+            raise Incomplete("Path ended without a declared stop")
+        return successors.flat_successors
+
     def explore(self):
         pending = [self.initial]
         while pending:
@@ -373,76 +516,10 @@ class Analysis:
                     raise Unsupported(
                         f"Control leaves declared code at {address:#x}; unknown call/target"
                     )
-                if self.project.is_hooked(address):
-                    raise Unsupported(
-                        "Implicit or explicit hooked execution is not admitted"
-                    )
-                qualify(ins, self.real)
-                flag_context = (
-                    before_instruction(
-                        state, ins, self.spec.get("shift_count", "portable")
-                    )
-                    if self.real
-                    else None
-                )
-                state.globals["path"] = path + (address,)
-                previous_events = len(state.globals["events"])
-                successors = self.project.factory.successors(state, num_inst=1)
+                pending.extend(self.step(state, ins))
+            except _TargetReached:
                 self.steps += 1
-                if successors.unconstrained_successors:
-                    raise Incomplete("Unconstrained control flow")
-                if self.real:
-                    for successor in successors.flat_successors:
-                        events = successor.globals["events"]
-                        current_events = events[previous_events:]
-                        after_instruction(successor, ins, flag_context, current_events)
-                        for segment in ("ds", "es"):
-                            if (
-                                len(
-                                    successor.solver.eval_upto(
-                                        getattr(successor.regs, segment), 2
-                                    )
-                                )
-                                != 1
-                            ):
-                                raise Unsupported(
-                                    "Symbolic DS/ES updates are not qualified"
-                                )
-                        if self.fixed_segments and any(
-                            successor.solver.satisfiable(
-                                extra_constraints=[getattr(successor.regs, n) != value]
-                            )
-                            for n, value in self.fixed_segments.items()
-                        ):
-                            raise Unsupported(
-                                "Layout relation requires unchanged segment registers"
-                            )
-                        if self.fixed_stack:
-                            low, size = self.fixed_stack
-                            sp = (
-                                claripy.ZeroExt(16, successor.regs.ss) << 4
-                            ) + claripy.ZeroExt(16, successor.regs.sp)
-                            if successor.solver.satisfiable(
-                                extra_constraints=[
-                                    claripy.Or(
-                                        claripy.ULT(sp, low),
-                                        claripy.UGT(sp, low + size),
-                                    )
-                                ]
-                            ):
-                                raise Unsupported(
-                                    "SP leaves the fixed relation stack window"
-                                )
-                        if is_memory_arithmetic(ins):
-                            normalized = normalize_arithmetic(
-                                successor, ins, current_events
-                            )
-                            successor.globals["events"] = (
-                                events[:previous_events] + normalized
-                            )
-                pending.extend(successors.flat_successors)
-                if not successors.flat_successors and not successors.unsat_successors:
-                    raise Incomplete("Path ended without a declared stop")
+                continue
             except (
                 Unsupported,
                 Incomplete,

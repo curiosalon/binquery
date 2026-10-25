@@ -50,7 +50,7 @@ files. The source archive also includes the tutorials, examples, and tests.
 Install a wheel in another environment with:
 
 ```sh
-python -m pip install /path/to/binquery-0.5.0-py3-none-any.whl
+python -m pip install /path/to/binquery-0.8.3-py3-none-any.whl
 ```
 
 Replace the path with your built wheel. pip installs the native dependencies
@@ -60,14 +60,14 @@ wheel; there is no binquery release on PyPI.
 ## Checks before a pull request
 
 ```sh
-python -m ruff format --check src tests tools examples
+python -m ruff format --check src tests tools examples skills
 python tools/check_dependencies.py
 python -m pytest -q -ra
 python tools/smoke.py
 python tools/check_examples.py
 ```
 
-Run `python -m ruff format src tests tools examples` to apply formatting.
+Run `python -m ruff format src tests tools examples skills` to apply formatting.
 `tools/smoke.py` exercises the installed CLI outside the checkout.
 `tools/check_examples.py` runs the tutorial comparisons and checks the expected
 results, including the intentional differences. It reports a skip for the
@@ -86,7 +86,7 @@ and on Linux with Python 3.13 and 3.14. Each job runs the test suite and CLI
 examples. The workflow page has the results and downloadable packages.
 
 Runtime dependencies are declared in `pyproject.toml`: angr, archinfo, CLE,
-Capstone, pypcode, and Unicorn. Their versions are pinned because changes to
+Capstone, pypcode, Unicorn, NetworkX, and pycparser. Their versions are pinned because changes to
 instruction semantics can affect analysis results. pip resolves their
 platform-specific dependencies normally.
 
@@ -102,3 +102,31 @@ The pinned Z3 5.1.0.0 wheel has inconsistent macOS version tags. On macOS 13.3
 or later, `pip check` can report it as unsupported even though it runs.
 `tools/check_dependencies.py` recognizes that exact warning for the matching
 CPU architecture and still rejects other dependency errors.
+
+
+### Unicorn in a restricted macOS process
+
+Some macOS sandboxes deny the cache-line probe in Unicorn 2.1.4, causing
+SIGILL before guest execution. The optional [patch and build notes](../patches/README.md)
+describe that specific repair. Ordinary installations use the stock dependency.
+
+## Optional binquery skill
+
+The repository includes a skill for choosing commands, interpreting results,
+and recording maintenance requests. Install it for Codex on Linux or macOS:
+
+```sh
+mkdir -p ~/.codex/skills
+cp -R skills/binquery ~/.codex/skills/
+```
+
+On Windows PowerShell:
+
+```powershell
+New-Item -ItemType Directory -Force "$HOME/.codex/skills"
+Copy-Item -Recurse skills/binquery "$HOME/.codex/skills/"
+```
+
+If you already have a customized binquery skill, review the changes before
+replacing it. The skill includes a local report helper; it does not install a
+service or submit issues automatically.

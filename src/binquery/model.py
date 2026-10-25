@@ -59,6 +59,11 @@ def contract(path):
     source = Path(path).resolve()
     raw = source.read_bytes()
     d = json.loads(raw)
+    return validate(d, source), {"path": str(source), "sha256": digest(raw)}
+
+
+def validate(d, source, *, analysis=False):
+    """Normalize an ordinary machine contract, also used by analysis entries."""
     fields(
         d,
         {
@@ -108,10 +113,16 @@ def contract(path):
         raise Invalid("At most 128 code ranges")
     for row in d["code"]:
         fields(
-            row, {"file", "offset", "address", "size", "sha256"}, {"address", "size"}
+            row,
+            {"file", "offset", "address", "size", "sha256", "segment"},
+            {"address", "size"},
         )
         for key in ("address", "size"):
             row[key] = number(row[key])
+        if "segment" in row:
+            row["segment"] = number(row["segment"])
+            if not 0 <= row["segment"] <= 65535:
+                raise Invalid("Invalid code segment")
         row["offset"] = number(row.get("offset", 0))
         if row["address"] < 0 or row["offset"] < 0 or not 0 < row["size"] <= 1048576:
             raise Invalid("Invalid code range")
@@ -122,14 +133,14 @@ def contract(path):
     spans = sorted((r["address"], r["address"] + r["size"]) for r in d["code"])
     if any(a[1] > b[0] for a, b in zip(spans, spans[1:])):
         raise Invalid("Overlapping code ranges")
-    if not isinstance(d["stops"], list) or not d["stops"]:
+    if not isinstance(d["stops"], list) or (not analysis and not d["stops"]):
         raise Invalid("Explicit stop addresses are required")
     for row in d["stops"]:
         fields(row, {"address", "kind"}, {"address", "kind"})
         row["address"] = number(row["address"])
         if row["kind"] not in ("return", "failure", "boundary"):
             raise Invalid("Stop kind must be return, failure or boundary")
-        if any(lo <= row["address"] < hi for lo, hi in spans):
+        if not analysis and any(lo <= row["address"] < hi for lo, hi in spans):
             raise Invalid("A stop cannot hide instructions inside a code range")
     if len({r["address"] for r in d["stops"]}) != len(d["stops"]):
         raise Invalid("Duplicate stop")
@@ -195,7 +206,7 @@ def contract(path):
     fields(given, defaults)
     limits = defaults | {k: number(v) for k, v in given.items()}
     maxima = {
-        "steps": 4096,
+        "steps": 1048576 if analysis else 4096,
         "states": 4096,
         "seconds": 300,
         "solver_ms": 60000,
@@ -212,4 +223,4 @@ def contract(path):
         raise Unsupported(
             "shift_count must be portable or masked5; unmasked 8086 shifts above 31 are not qualified"
         )
-    return d, {"path": str(source), "sha256": digest(raw)}
+    return d

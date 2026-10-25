@@ -7,3 +7,5 @@ dist/
 build/
 /demo*/
 /*.o
+
+/trace-demo/

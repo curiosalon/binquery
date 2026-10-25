@@ -18,6 +18,9 @@ dependencies = [
     "capstone==5.0.9",
     "pypcode==4.0.1",
     "unicorn==2.1.4",
+    "networkx==3.7",
+    # angr uses parser internals changed in pycparser 3.12.
+    "pycparser==3.11",
 ]
 classifiers = [
     "Development Status :: 3 - Alpha",

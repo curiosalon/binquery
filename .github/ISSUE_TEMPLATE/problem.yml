@@ -1,0 +1,32 @@
+name: Bug or usability problem
+description: Report a failure, confusing result, or awkward workflow.
+body:
+  - type: textarea
+    id: goal
+    attributes:
+      label: What were you trying to find out?
+      description: Describe the binary question and what got in the way.
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Version and environment
+      description: binquery version, OS, Python version, installation method, and any wrapper.
+    validations:
+      required: true
+  - type: textarea
+    id: command
+    attributes:
+      label: Command and reproduction
+      description: Include the exact command and a small example or contract if available.
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: result
+    attributes:
+      label: Expected and actual result
+      description: Include the exit code, relevant JSON output or stderr, and any workaround.
+    validations:
+      required: true

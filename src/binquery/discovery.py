@@ -55,6 +55,7 @@ def contract_schema():
             "address": integer,
             "size": integer,
             "offset": integer,
+            "segment": integer,
             "file": {
                 "type": "string",
                 "description": "Raw auxiliary input, relative to the contract file.",

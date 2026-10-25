@@ -11,6 +11,7 @@ from .model import Unsupported
 
 MEMORY_ARITHMETIC = {
     "add",
+    "adc",
     "sub",
     "inc",
     "dec",
@@ -20,6 +21,7 @@ MEMORY_ARITHMETIC = {
     "not",
     "shl",
     "shr",
+    "sar",
 }
 
 
@@ -39,7 +41,6 @@ def normalize_arithmetic(state, ins, events):
         not is_memory_arithmetic(ins)
         or sum(o.type == capstone.x86.X86_OP_MEM for o in ins.operands) != 1
         or ins.operands[0].size not in (1, 2)
-        or any(ins.prefix)
     ):
         reject()
     writes = [i for i, e in enumerate(events) if e[1] == "write"]

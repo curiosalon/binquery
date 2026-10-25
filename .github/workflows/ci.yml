@@ -39,7 +39,7 @@ jobs:
       - name: Install built wheel with public dependencies
         run: python -c "import glob,subprocess,sys; subprocess.check_call([sys.executable,'-m','pip','install',glob.glob('dist/*.whl')[0]+'[dev]'])"
       - name: Check source formatting
-        run: python -m ruff format --check src tests tools examples
+        run: python -m ruff format --check src tests tools examples skills
       - name: Check dependency consistency
         run: python tools/check_dependencies.py
       - name: Test installed package

@@ -3,5 +3,7 @@ recursive-include docs *.md
 recursive-include examples *.json *.bin *.c *.cpp *.py
 recursive-include tests *.py
 recursive-include tools *.py
+recursive-include skills *.md *.py *.yaml
+recursive-include patches *.md *.patch
 prune .github
 global-exclude __pycache__ *.py[cod]

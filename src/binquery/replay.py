@@ -52,11 +52,15 @@ def validate_witness(analysis, witness):
     expected = witness["expected"]
     fields(
         expected,
-        {"registers", "stop", "path", "events", "flags", "memory"},
+        {"registers", "stop", "path", "events", "flags", "memory", "transfer"},
         {"registers", "stop", "path", "events"},
     )
     registers(expected["registers"])
-    if type(expected["stop"]) is not int or expected["stop"] not in analysis.stop_map:
+    if (
+        type(expected["stop"]) is not int
+        or expected["stop"] not in analysis.stop_map
+        and "transfer" not in expected
+    ):
         raise Invalid("Witness stop is not declared")
     path = expected["path"]
     if (
@@ -66,6 +70,19 @@ def validate_witness(analysis, witness):
         or any(type(a) is not int or a not in analysis.instructions for a in path)
     ):
         raise Invalid("Invalid witness instruction path")
+    if "transfer" in expected:
+        import capstone
+
+        ins = analysis.instructions[path[-1]]
+        if expected["transfer"] != path[-1] or not (
+            analysis.real
+            and ins.mnemonic in ("ljmp", "lcall", "retf")
+            or ins.mnemonic in ("jmp", "call")
+            and len(ins.operands) == 1
+            and ins.operands[0].type
+            in (capstone.x86.X86_OP_REG, capstone.x86.X86_OP_MEM)
+        ):
+            raise Invalid("Transfer witness must end at a qualified indirect JMP/CALL")
     for address in path:
         qualify(analysis.instructions[address], analysis.real)
     flags = expected.get("flags", {})
@@ -125,6 +142,8 @@ def replay(analysis, witness):
     spans = [(a, len(raw)) for a, raw in analysis.chunks]
     spans += [(r["address"], len(bytes.fromhex(r["hex"]))) for r in witness["memory"]]
     spans += [(a, 1) for a in analysis.stop_map]
+    if "transfer" in witness["expected"]:
+        spans.append((witness["expected"]["stop"], 1))
     # Include saved frame writes and every expected memory access. This maps
     # storage, not invented initial values; first read checking below detects
     # undeclared native inputs before accepting replay.
@@ -213,10 +232,18 @@ def replay(analysis, witness):
             analysis.spec["entry"],
             0,
             timeout=analysis.spec["limits"]["seconds"] * 1000000,
-            count=analysis.spec["limits"]["steps"] + 1,
+            count=len(witness["expected"]["path"])
+            if "transfer" in witness["expected"]
+            else analysis.spec["limits"]["steps"] + 1,
         )
     except unicorn.UcError as exc:
         errors.append(str(exc))
+    if "transfer" in witness["expected"] and not errors and not stop:
+        stop.append(
+            (u.reg_read(x86.UC_X86_REG_CS) << 4) + u.reg_read(x86.UC_X86_REG_IP)
+            if analysis.real
+            else u.reg_read(x86.UC_X86_REG_RIP)
+        )
     outputs = {
         name: u.reg_read(getattr(x86, "UC_X86_REG_" + name.upper()))
         for name in analysis.register_names

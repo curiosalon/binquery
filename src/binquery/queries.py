@@ -9,6 +9,127 @@ from .model import Invalid, Unsupported
 from .replay import replay
 
 
+def targets(binary, spec, site, maximum=32):
+    """Observe one qualified indirect transfer without entering its destinations."""
+    import capstone
+    from .model import Incomplete
+
+    analysis = Analysis(binary, spec)
+    ins = analysis.instructions.get(site)
+    if ins is None or not (
+        ins.mnemonic in ("ljmp", "lcall", "retf")
+        and analysis.real
+        or ins.mnemonic in ("jmp", "call")
+        and len(ins.operands) == 1
+        and ins.operands[0].type in (capstone.x86.X86_OP_REG, capstone.x86.X86_OP_MEM)
+    ):
+        raise Unsupported("Targets needs a decoded qualified control transfer")
+    if not 1 <= maximum <= 256:
+        raise Invalid("Target limit must be between 1 and 256")
+    analysis.target_site = site
+    analysis.explore()
+    rows = {}
+    domain_complete = True
+    for state, expression in analysis.target_states:
+        remaining = state.copy()
+        far = (
+            state.globals.get("far_target")
+            if ins.mnemonic in ("ljmp", "lcall", "retf")
+            else None
+        )
+        identity = claripy.Concat(*far) if far else expression
+        # Enumerate the residual domain, including predecessor constraints.
+        # Every model is excluded explicitly; only UNSAT establishes exhaustion.
+        while remaining.solver.satisfiable():
+            if time.monotonic() - analysis.started > spec["limits"]["seconds"]:
+                analysis.issues.append(
+                    dict(kind="INCONCLUSIVE", reason="Target enumeration time limit")
+                )
+                domain_complete = False
+                break
+            value = remaining.solver.eval(identity)
+            if value not in rows and len(rows) >= maximum:
+                domain_complete = False
+                break
+            selected = remaining.copy()
+            selected.add_constraints(identity == value)
+            selected.regs.ip = expression
+            witness = analysis.witness(selected)
+            witness["expected"]["transfer"] = site
+            native = replay(analysis, witness)
+            if value not in rows:
+                physical = selected.solver.eval(expression)
+                interior = any(
+                    a < physical < a + i.size for a, i in analysis.instructions.items()
+                )
+                row = dict(
+                    address=dict(
+                        space="physical" if analysis.real else "virtual",
+                        offset=physical,
+                    ),
+                    kind="far" if far else "near",
+                    width=32 if far else 16 if analysis.real else 64,
+                    destination="instruction_boundary"
+                    if physical in analysis.instructions
+                    else "interior_instruction"
+                    if interior
+                    else "outside_supplied_code",
+                    witness=witness,
+                    replay=native,
+                )
+                if analysis.real:
+                    cs = concrete(selected, selected.regs.cs)
+                    row.update(
+                        segment=cs,
+                        offset=selected.solver.eval(far[1])
+                        if far
+                        else physical - (cs << 4),
+                    )
+                rows[value] = row
+            if not native["matched"]:
+                analysis.issues.append(
+                    dict(
+                        kind="INCONCLUSIVE",
+                        reason="Target witness replay differs",
+                        target=value,
+                    )
+                )
+            remaining.add_constraints(identity != value)
+        if not domain_complete:
+            break
+    complete = not analysis.issues and domain_complete
+    status = (
+        "COMPLETE"
+        if complete and rows
+        else "UNREACHABLE_WITHIN_SCOPE"
+        if complete
+        else "INCOMPLETE"
+    )
+    return analysis.summary() | dict(
+        operation="targets",
+        status=status,
+        complete=complete,
+        site=dict(space="physical" if analysis.real else "virtual", offset=site),
+        targets=[rows[n] for n in sorted(rows)],
+        predecessor_states=len(analysis.target_states),
+        target_limit=maximum,
+        domain_exhausted=domain_complete,
+        conflicts=[
+            dict(address=r["address"], reason=r["destination"])
+            for r in rows.values()
+            if r["destination"] != "instruction_boundary"
+        ],
+        native_import_qualified=False,
+        assumptions=dict(
+            registers=spec["registers"],
+            memory=spec["memory"],
+            entry=spec["entry"],
+            stops=spec["stops"],
+        ),
+        scope="Declared initial state and executed prefixes only; supplied bytes are initial contents, not an invariant. Outside-supplied-code targets remain observations, not inferred valid bodies; mutable writers and overlay correspondence require separate evidence.",
+    )
+
+
 def query(binary, spec):
     analysis = Analysis(binary, spec).explore()
     answers = []

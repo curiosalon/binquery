@@ -113,14 +113,54 @@ def inspect_file(args):
 
 
 def run(args, *, bounded=False):
+    if (
+        args.command in ("analyze", "report", "graph")
+        or args.command == "query"
+        and getattr(args, "analysis", None)
+    ):
+        from .execution_cli import run as execute
+
+        return execute(args, bounded=bounded)
+    if args.command in ("schema", "example") and args.kind == "analysis":
+        from .execution_schema import discover
+
+        return discover(args)
     if args.command in ("schema", "example"):
         from .discovery import discover
 
         return discover(args)
     if args.command == "inspect":
         return inspect_file(args)
+    if not args.binary or not args.contract:
+        raise Invalid("Provide a binary and --contract, or query --analysis")
     spec, identity = contract(args.contract)
     seconds = spec["limits"]["seconds"]
+    target_request = None
+    if args.command == "targets":
+        target_request = dict(
+            site=args.site,
+            maximum_targets=args.maximum_targets,
+            inputs={
+                str(p): digest(p.read_bytes())
+                for p in sorted(
+                    {
+                        Path(args.binary).resolve(),
+                        *[Path(r["file"]) for r in spec["code"] if "file" in r],
+                    }
+                )
+            },
+            contract=identity["sha256"],
+            version=__version__,
+        )
+        if getattr(args, "reuse", None):
+            saved = json.loads(Path(args.reuse).read_text())
+            if (
+                saved.get("operation") == "targets"
+                and saved.get("target_request") == target_request
+                and saved.get("complete") is True
+            ):
+                return dict(saved, reused=True)
+
     right_spec = None
     if args.command == "compare":
         right_spec, right_id = contract(args.right_contract or args.contract)
@@ -130,10 +170,12 @@ def run(args, *, bounded=False):
 
         return run_bounded(vars(args), seconds)
     from .engine import Analysis
-    from .queries import query, compare
+    from .queries import query, compare, targets
     from .replay import replay
 
-    if args.command == "query":
+    if args.command == "targets":
+        result = targets(args.binary, spec, args.site, args.maximum_targets)
+    elif args.command == "query":
         result = query(args.binary, spec)
     elif args.command == "compare":
         from .observations import load_comparison
@@ -197,7 +239,9 @@ def run(args, *, bounded=False):
                 item = saved["comparisons"][args.aspect] if args.aspect else saved
                 witness = item["witness"][args.side]
             else:
-                witness = saved["claims"][args.claim]["witness"]
+                witness = saved[
+                    "targets" if saved.get("operation") == "targets" else "claims"
+                ][args.claim]["witness"]
         except (KeyError, IndexError) as exc:
             raise Invalid(
                 "Selected query claim or comparison aspect has no witness"
@@ -213,6 +257,8 @@ def run(args, *, bounded=False):
                 scope="One concrete execution only; this does not re-establish paired equivalence",
             )
     result["contract"] = identity
+    if target_request is not None:
+        result.update(target_request=target_request, reused=False)
     return result
 
 
@@ -244,6 +290,9 @@ def parser():
     )
     p.add_argument("--version", action="version", version=__version__)
     sub = p.add_subparsers(dest="command", required=True)
+    from .execution_cli import add_commands, add_query_options
+
+    add_commands(sub)
     schema = sub.add_parser("schema", help="Describe the machine-contract JSON Schema")
     schema.add_argument(
         "--json", action="store_true", help="Schema and tool metadata as JSON"
@@ -253,7 +302,9 @@ def parser():
         action="store_true",
         help="Emit just the JSON Schema for a validator",
     )
-    schema.add_argument("--kind", choices=("machine", "comparison"), default="machine")
+    schema.add_argument(
+        "--kind", choices=("machine", "comparison", "analysis"), default="machine"
+    )
     example = sub.add_parser(
         "example", help="Show a runnable synthetic binary and contract example"
     )
@@ -269,25 +320,55 @@ def parser():
         help="Emit just the input contract, ready for shell redirection",
     )
     example.add_argument(
-        "--kind", choices=("machine", "final-memory", "layout"), default="machine"
+        "--kind",
+        choices=("machine", "final-memory", "layout", "analysis"),
+        default="machine",
     )
-    for command in ("query", "compare", "replay", "inspect"):
+    for command in ("query", "targets", "compare", "replay", "inspect"):
         c = sub.add_parser(
             command,
             epilog=contract_help,
             formatter_class=argparse.RawDescriptionHelpFormatter,
         )
-        c.add_argument("binary", help="Input executable, object or raw code file")
+        c.add_argument(
+            "binary",
+            **({"nargs": "?"} if command == "query" else {}),
+            help="Input executable, object or raw code file",
+        )
+        if command == "query":
+            add_query_options(c)
         c.add_argument(
             "--json", action="store_true", help="Stable JSON result on stdout"
         )
         if command != "inspect":
             c.add_argument(
                 "--contract",
-                required=True,
+                required=command != "query",
                 help="Machine state, code ranges, exits and limits (JSON)",
             )
-        if command == "compare":
+        if command == "targets":
+            c.add_argument(
+                "--site",
+                type=number,
+                required=True,
+                help="Decoded indirect transfer physical/virtual address",
+            )
+            c.add_argument(
+                "--maximum-targets",
+                type=int,
+                default=32,
+                help="Distinct feasible target budget, 1..256",
+            )
+            c.add_argument(
+                "--reuse",
+                help="Reuse a complete ordinary targets result only when all input identities and query bounds agree",
+            )
+            c.add_argument(
+                "--require-complete",
+                action="store_true",
+                help="Exit 1 if the supplied target scope cannot be exhausted",
+            )
+        elif command == "compare":
             c.add_argument("right", help="Second binary")
             c.add_argument(
                 "--right-contract",
@@ -371,7 +452,7 @@ def result_for(args, *, bounded=False):
 def main(argv=None):
     args = parser().parse_args(argv)
     result = result_for(args)
-    result["schema"] = 1
+    result.setdefault("schema", 1)
     result["tool"] = {
         "name": "binquery",
         "version": __version__,
@@ -394,8 +475,25 @@ def main(argv=None):
         )
     elif args.command == "example" and args.contract_only and "contract" in result:
         print(json.dumps(result["contract"], indent=2))
-    elif args.json:
+    elif (
+        args.command == "graph"
+        and args.format == "dot"
+        and not args.json
+        and result.get("operation") == "graph"
+    ):
+        from .execution_queries import dot
+
+        print(dot(result))
+    elif args.json or args.command == "graph" and args.format == "json":
         print(json.dumps(result, indent=2))
+    elif (
+        args.command in ("analyze", "report", "graph")
+        or args.command == "query"
+        and getattr(args, "analysis", None)
+    ):
+        from .execution_cli import human
+
+        human(result)
     else:
         print(" / ".join(statuses))
         if "reason" in result:
@@ -425,6 +523,10 @@ def main(argv=None):
             )
         if result.get("issues"):
             print(json.dumps(result["issues"]))
+    if args.command == "targets":
+        if result.get("status") in ("ERROR", "INVALID"):
+            return 2
+        return 1 if args.require_complete and not result.get("complete", False) else 0
     if "ERROR" in statuses:
         return 4
     if "INVALID" in statuses:
